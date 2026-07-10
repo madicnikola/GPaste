@@ -28,6 +28,7 @@ typedef struct
     gboolean   images_support;
     gboolean   images_preview;
     guint64    images_preview_size;
+    guint64    images_hover_preview_size;
     gchar     *launch_ui;
     gchar     *make_password;
     guint64    max_history_size;
@@ -269,6 +270,23 @@ BOOLEAN_SETTING (images_preview, IMAGES_PREVIEW)
  * Change the "images-preview-size" setting
  */
 UNSIGNED_SETTING (images_preview_size, IMAGES_PREVIEW_SIZE)
+
+/**
+ * g_paste_settings_get_images_hover_preview_size:
+ * @self: a #GPasteSettings instance
+ *
+ * Get the "images-hover-preview-size" setting
+ *
+ * Returns: the value of the "images-hover-preview-size" setting
+ */
+/**
+ * g_paste_settings_set_images_hover_preview_size:
+ * @self: a #GPasteSettings instance
+ * @value: the largest dimension of the on-hover detail preview, in pixels
+ *
+ * Change the "images-hover-preview-size" setting
+ */
+UNSIGNED_SETTING (images_hover_preview_size, IMAGES_HOVER_PREVIEW_SIZE)
 
 /**
  * g_paste_settings_get_launch_ui:
@@ -730,6 +748,7 @@ static const GPasteSettingEntry setting_entries[] = {
     SETTING_ENTRY (IMAGES_SUPPORT, images_support),
     SETTING_ENTRY (IMAGES_PREVIEW, images_preview),
     SETTING_ENTRY (IMAGES_PREVIEW_SIZE, images_preview_size),
+    SETTING_ENTRY (IMAGES_HOVER_PREVIEW_SIZE, images_hover_preview_size),
     KEYBINDING_ENTRY (LAUNCH_UI, launch_ui),
     KEYBINDING_ENTRY (MAKE_PASSWORD, make_password),
     SETTING_ENTRY (MAX_HISTORY_SIZE, max_history_size),
@@ -810,6 +829,7 @@ g_paste_settings_settings_changed (GSettings   *settings G_GNUC_UNUSED,
     BOOL (images_support,             IMAGES_SUPPORT)               \
     BOOL (images_preview,             IMAGES_PREVIEW)               \
     UINT (images_preview_size,        IMAGES_PREVIEW_SIZE)          \
+    UINT (images_hover_preview_size,  IMAGES_HOVER_PREVIEW_SIZE)    \
     STR  (launch_ui,                  LAUNCH_UI)                    \
     STR  (make_password,              MAKE_PASSWORD)                \
     UINT (max_history_size,           MAX_HISTORY_SIZE)             \

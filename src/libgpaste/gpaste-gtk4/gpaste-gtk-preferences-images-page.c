@@ -53,7 +53,12 @@ g_paste_gtk_preferences_images_page_new (GPasteSettings *settings)
     g_paste_gtk_preferences_group_add_range_setting (group,
                                                      _("Preview size"),
                                                      G_PASTE_IMAGES_PREVIEW_SIZE_SETTING,
-                                                     50, 200, 10,
+                                                     16, 200, 10,
+                                                     settings);
+    g_paste_gtk_preferences_group_add_range_setting (group,
+                                                     _("Hover preview size"),
+                                                     G_PASTE_IMAGES_HOVER_PREVIEW_SIZE_SETTING,
+                                                     50, 4000, 50,
                                                      settings);
     g_paste_gtk_preferences_page_add_group (G_PASTE_GTK_PREFERENCES_PAGE (self), group);
 

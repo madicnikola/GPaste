@@ -22,6 +22,7 @@ G_BEGIN_DECLS
 #define G_PASTE_HISTORY_NAME_SETTING               "history-name"
 #define G_PASTE_IMAGES_PREVIEW_SETTING             "images-preview"
 #define G_PASTE_IMAGES_PREVIEW_SIZE_SETTING        "images-preview-size"
+#define G_PASTE_IMAGES_HOVER_PREVIEW_SIZE_SETTING  "images-hover-preview-size"
 #define G_PASTE_IMAGES_SUPPORT_SETTING             "images-support"
 #define G_PASTE_LAUNCH_UI_SETTING                  "launch-ui"
 #define G_PASTE_MAKE_PASSWORD_SETTING              "make-password"
