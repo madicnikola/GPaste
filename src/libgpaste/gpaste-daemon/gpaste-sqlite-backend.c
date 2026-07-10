@@ -222,6 +222,12 @@ _g_paste_sqlite_backend_insert_special_values (sqlite3          *db,
         gsize len = 0;
         gconstpointer data = g_bytes_get_data (bytes, &len);
 
+        /* g_bytes_get_data() returns NULL for a zero-length GBytes; passing that
+         * straight to sqlite3_bind_blob() binds SQL NULL instead of an empty
+         * blob, which then fails the NOT NULL constraint on this column. */
+        if (!data)
+            data = "";
+
         sqlite3_reset (stmt);
         sqlite3_clear_bindings (stmt);
         sqlite3_bind_text (stmt, 1, uuid, -1, SQLITE_TRANSIENT);

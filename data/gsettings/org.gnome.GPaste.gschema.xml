@@ -51,11 +51,20 @@
     </key>
 
     <key name="images-preview-size" type="t">
-      <range min="50" max="200"/>
+      <range min="16" max="200"/>
       <default>50</default>
       <summary>Size of image previews in pixels</summary>
       <description>
         Size of the inline image thumbnail in the history; the larger detail preview is shown on hover. Default size is 50 pixels.
+      </description>
+    </key>
+
+    <key name="images-hover-preview-size" type="t">
+      <range min="50" max="4000"/>
+      <default>250</default>
+      <summary>Largest dimension of the on-hover detail preview, in pixels</summary>
+      <description>
+        Size of the larger detail preview shown when hovering an image thumbnail in the history; aspect ratio is preserved. Default size is 250 pixels.
       </description>
     </key>
 
