@@ -3,6 +3,8 @@
 
 #include <gpaste/gpaste-gsettings-keys.h>
 
+#include <gdk-pixbuf/gdk-pixbuf.h>
+
 #include <gpaste-ui-edit-item.h>
 #include <gpaste-ui-item-action.h>
 #include <gpaste-ui-item-skeleton.h>
@@ -239,12 +241,21 @@ g_paste_ui_item_skeleton_set_thumbnail (GPasteUiItemSkeleton *self,
     g_paste_ui_item_skeleton_on_images_preview_changed (priv->settings, NULL, priv);
 }
 
-/* Largest dimension, in pixels, of the hover preview. */
-#define G_PASTE_UI_ITEM_SKELETON_PREVIEW_SIZE 400
+static void
+g_paste_ui_item_skeleton_on_hover_preview_size_changed (GPasteSettings *settings G_GNUC_UNUSED,
+                                                        const gchar    *key      G_GNUC_UNUSED,
+                                                        gpointer        user_data)
+{
+    GPasteUiItemSkeletonPrivate *priv = user_data;
+    g_clear_object (&priv->tooltip_preview);
+}
 
 /* Enlarge the small inline thumbnail to a detail preview on hover: the inline
  * picture is deliberately tiny (images-preview-size), so show the full image,
- * capped and aspect-preserved, in a custom tooltip. */
+ * capped (images-hover-preview-size) and aspect-preserved, in a custom
+ * tooltip. GtkTooltip's custom-content window does not reliably honor
+ * gtk_widget_set_size_request() on the inner widget, so the actual pixel data
+ * must be pre-scaled down before being handed to the tooltip. */
 static gboolean
 g_paste_ui_item_skeleton_on_thumbnail_query_tooltip (GtkWidget  *widget,
                                                      gint        x        G_GNUC_UNUSED,
@@ -260,23 +271,50 @@ g_paste_ui_item_skeleton_on_thumbnail_query_tooltip (GtkWidget  *widget,
         return FALSE;
 
     /* query-tooltip fires repeatedly while hovering; build the scaled preview
-     * once per thumbnail and reuse it (cleared in set_thumbnail/dispose). */
+     * once per thumbnail and reuse it (cleared in set_thumbnail/dispose/on
+     * hover-preview-size change). */
     if (!priv->tooltip_preview)
     {
-        GtkWidget *preview = gtk_picture_new_for_paintable (paintable);
-        gtk_picture_set_content_fit (GTK_PICTURE (preview), GTK_CONTENT_FIT_CONTAIN);
-
+        gint preview_size = MAX ((gint) g_paste_settings_get_images_hover_preview_size (priv->settings), 10);
         gint width = gdk_paintable_get_intrinsic_width (paintable);
         gint height = gdk_paintable_get_intrinsic_height (paintable);
+        GdkPaintable *scaled_paintable = paintable;
+        g_autoptr (GdkTexture) scaled_texture = NULL;
 
-        if (width > 0 && height > 0)
+        if ((width > preview_size || height > preview_size) && GDK_IS_TEXTURE (paintable))
         {
-            gdouble scale = MIN (1.0, MIN ((gdouble) G_PASTE_UI_ITEM_SKELETON_PREVIEW_SIZE / width,
-                                           (gdouble) G_PASTE_UI_ITEM_SKELETON_PREVIEW_SIZE / height));
-            gtk_widget_set_size_request (preview, width * scale, height * scale);
+            g_autoptr (GdkPixbuf) pixbuf = gdk_pixbuf_get_from_texture (GDK_TEXTURE (paintable));
+
+            if (pixbuf)
+            {
+                gdouble scale = MIN ((gdouble) preview_size / width,
+                                     (gdouble) preview_size / height);
+                gint target_width  = MAX (1, (gint) (width * scale));
+                gint target_height = MAX (1, (gint) (height * scale));
+                g_autoptr (GdkPixbuf) resized = gdk_pixbuf_scale_simple (pixbuf, target_width, target_height, GDK_INTERP_BILINEAR);
+
+                if (resized)
+                {
+                    scaled_texture = gdk_texture_new_for_pixbuf (resized);
+                    scaled_paintable = GDK_PAINTABLE (scaled_texture);
+                }
+            }
         }
-        else
-            gtk_widget_set_size_request (preview, G_PASTE_UI_ITEM_SKELETON_PREVIEW_SIZE, G_PASTE_UI_ITEM_SKELETON_PREVIEW_SIZE);
+
+        GtkWidget *preview = gtk_picture_new_for_paintable (scaled_paintable);
+        gtk_picture_set_content_fit (GTK_PICTURE (preview), GTK_CONTENT_FIT_CONTAIN);
+
+        if (scaled_paintable == paintable)
+        {
+            if (width > 0 && height > 0)
+            {
+                gdouble scale = MIN (1.0, MIN ((gdouble) preview_size / width,
+                                               (gdouble) preview_size / height));
+                gtk_widget_set_size_request (preview, width * scale, height * scale);
+            }
+            else
+                gtk_widget_set_size_request (preview, preview_size, preview_size);
+        }
 
         priv->tooltip_preview = g_object_ref_sink (preview);
     }
@@ -457,6 +495,10 @@ g_paste_ui_item_skeleton_new (GType           type,
     g_signal_group_connect (settings_signals,
                             "changed::" G_PASTE_IMAGES_PREVIEW_SIZE_SETTING,
                             G_CALLBACK (g_paste_ui_item_skeleton_on_images_preview_changed),
+                            priv);
+    g_signal_group_connect (settings_signals,
+                            "changed::" G_PASTE_IMAGES_HOVER_PREVIEW_SIZE_SETTING,
+                            G_CALLBACK (g_paste_ui_item_skeleton_on_hover_preview_size_changed),
                             priv);
     g_signal_group_set_target (settings_signals, settings);
     g_paste_ui_item_skeleton_set_text_size (settings, NULL, priv);

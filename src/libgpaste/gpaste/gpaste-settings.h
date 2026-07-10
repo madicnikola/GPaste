@@ -23,6 +23,7 @@ gboolean     g_paste_settings_get_growing_lines              (const GPasteSettin
 const gchar *g_paste_settings_get_history_name               (const GPasteSettings *self);
 gboolean     g_paste_settings_get_images_preview             (const GPasteSettings *self);
 guint64      g_paste_settings_get_images_preview_size        (const GPasteSettings *self);
+guint64      g_paste_settings_get_images_hover_preview_size  (const GPasteSettings *self);
 gboolean     g_paste_settings_get_images_support             (const GPasteSettings *self);
 const gchar *g_paste_settings_get_launch_ui                  (const GPasteSettings *self);
 const gchar *g_paste_settings_get_make_password              (const GPasteSettings *self);
@@ -60,6 +61,8 @@ void g_paste_settings_set_history_name               (GPasteSettings *self,
 void g_paste_settings_set_images_preview             (GPasteSettings *self,
                                                       gboolean        value);
 void g_paste_settings_set_images_preview_size        (GPasteSettings *self,
+                                                      guint64         value);
+void g_paste_settings_set_images_hover_preview_size  (GPasteSettings *self,
                                                       guint64         value);
 void g_paste_settings_set_images_support             (GPasteSettings *self,
                                                       gboolean        value);
