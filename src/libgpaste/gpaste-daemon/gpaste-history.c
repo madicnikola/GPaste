@@ -993,6 +993,17 @@ g_paste_history_history_name_changed (GPasteHistory *self)
     g_paste_history_saver_load (priv->saver, priv->name, TRUE);
 }
 
+static gboolean
+g_paste_history_history_name_changed_idle (gpointer user_data)
+{
+    GPasteHistory *self = user_data;
+
+    g_paste_history_history_name_changed (self);
+    g_object_unref (self);
+
+    return G_SOURCE_REMOVE;
+}
+
 static void
 g_paste_history_settings_changed (GPasteSettings *settings G_GNUC_UNUSED,
                                   const gchar    *key,
@@ -1008,7 +1019,11 @@ g_paste_history_settings_changed (GPasteSettings *settings G_GNUC_UNUSED,
     else if (g_paste_str_equal (key, G_PASTE_MAX_MEMORY_USAGE_SETTING))
         g_paste_history_private_check_memory_usage (priv);
     else if (g_paste_str_equal (key, G_PASTE_HISTORY_NAME_SETTING))
-        g_paste_history_history_name_changed (self);
+        /* GSettings fires "changed" synchronously from inside g_settings_set_*(),
+         * so a caller still on the stack (e.g. the D-Bus SwitchHistory method)
+         * would have priv->history disposed out from under it. Defer to idle so
+         * disposal happens after the current call stack unwinds. */
+        g_idle_add (g_paste_history_history_name_changed_idle, g_object_ref (self));
 }
 
 static void
