@@ -6,6 +6,7 @@
 #include <gpaste-daemon/gpaste-color-item.h>
 #include <gpaste-daemon/gpaste-image-item.h>
 #include <gpaste-daemon/gpaste-password-item.h>
+#include <gpaste-daemon/gpaste-special-atom.h>
 #include <gpaste-daemon/gpaste-sqlite-backend.h>
 #include <gpaste-daemon/gpaste-text-item.h>
 #include <gpaste-daemon/gpaste-uris-item.h>
@@ -451,6 +452,208 @@ g_paste_sqlite_backend_migrate_schema (sqlite3 *db,
     }
 }
 
+/* qinghon's original SQLite backend predates PRAGMA user_version and used a
+ * uuid-keyed items table with clip_order/sticky_clip_order/pinned/hash/size/
+ * last_paste_date columns, a (item_uuid, mime)-keyed special_values table,
+ * and a side image_metadata table for the image date. It reports
+ * "PRAGMA user_version" as 0, same as a genuinely fresh database, so it can't
+ * be told apart by version alone; detect it by the clip_order column, which
+ * no version of the current schema has. */
+static gboolean
+g_paste_sqlite_backend_has_legacy_schema (sqlite3 *db)
+{
+    sqlite3_stmt *stmt = NULL;
+
+    if (sqlite3_prepare_v2 (db, "SELECT 1 FROM pragma_table_info ('items') WHERE name = 'clip_order';", -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    gboolean legacy = sqlite3_step (stmt) == SQLITE_ROW;
+
+    sqlite3_finalize (stmt);
+
+    return legacy;
+}
+
+/* The legacy special_values table stored the raw MIME type string (e.g.
+ * "text/html", as returned by g_paste_special_atom_get()); the current one
+ * stores the GPasteSpecialAtom nick (e.g. "text-html"), since
+ * read_special_values looks values up with g_enum_get_value_by_nick(). Map
+ * one to the other via the same atom list both sides agree on, rather than
+ * hardcoding the pairing a second time. */
+static const gchar *
+g_paste_sqlite_backend_nick_for_legacy_mime (GEnumClass  *atom_class,
+                                             const gchar *legacy_mime)
+{
+    for (guint i = 0; i < atom_class->n_values; ++i)
+    {
+        GEnumValue *gev = &atom_class->values[i];
+
+        if (g_paste_str_equal (g_paste_special_atom_get ((GPasteSpecialAtom) gev->value), legacy_mime))
+            return gev->value_nick;
+    }
+
+    return NULL;
+}
+
+/* Migrate a database still using qinghon's pre-versioning schema (see above)
+ * to the current one, in a single transaction so a failure leaves the legacy
+ * tables untouched rather than half-converted.
+ *
+ * clip_order (REAL, front = highest, sticky_clip_order/pinned always unset by
+ * every writer that ever shipped) becomes a fresh 1..N rank in the same
+ * front-to-back order. Image items keep their on-disk path as value; the
+ * checksum, previously only ever derived from the path's basename on read, is
+ * now stored directly, and the date moves from the side image_metadata table
+ * into items.date. special_values loses its (item_uuid, mime) uniqueness for
+ * (item_id, position): the legacy table never held more than one row per
+ * mime per item, so a fresh per-item 0.. position preserves everything.
+ * display_string, hash, size, last_paste_date and pinned have no home in the
+ * new schema: hash/size were read-path optimisations, the other three were
+ * columns no writer ever actually populated. */
+static gboolean
+g_paste_sqlite_backend_migrate_legacy_schema (sqlite3 *db)
+{
+    if (!g_paste_sqlite_backend_exec (db,
+                                      "BEGIN IMMEDIATE;"
+                                      "ALTER TABLE items RENAME TO items_legacy;"
+                                      "ALTER TABLE special_values RENAME TO special_values_legacy;"
+                                      "ALTER TABLE image_metadata RENAME TO image_metadata_legacy;"))
+        return FALSE;
+
+    if (!g_paste_sqlite_backend_create_schema (db))
+    {
+        g_paste_sqlite_backend_exec (db, "ROLLBACK;");
+        return FALSE;
+    }
+
+    gint64 rank = g_paste_sqlite_backend_query_int64 (db, "SELECT COUNT (*) FROM items_legacy;", 0);
+    gboolean ok = TRUE;
+
+    sqlite3_stmt *select_items = NULL;
+    sqlite3_stmt *insert_item = NULL;
+    sqlite3_stmt *select_image_date = NULL;
+    sqlite3_stmt *select_specials = NULL;
+    sqlite3_stmt *insert_special = NULL;
+
+    ok = ok && sqlite3_prepare_v2 (db,
+                                   "SELECT uuid, kind, value FROM items_legacy"
+                                   " ORDER BY sticky_clip_order DESC, clip_order DESC;",
+                                   -1, &select_items, NULL) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2 (db,
+                                   "INSERT INTO items (uuid, kind, value, rank, date, checksum) VALUES (?, ?, ?, ?, ?, ?) RETURNING id;",
+                                   -1, &insert_item, NULL) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2 (db, "SELECT date FROM image_metadata_legacy WHERE item_uuid = ?;", -1, &select_image_date, NULL) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2 (db, "SELECT mime, data FROM special_values_legacy WHERE item_uuid = ?;", -1, &select_specials, NULL) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2 (db, "INSERT INTO special_values (item_id, position, mime, data) VALUES (?, ?, ?, ?);", -1, &insert_special, NULL) == SQLITE_OK;
+
+    if (!ok)
+        g_warning ("sqlite: failed to prepare legacy migration statements: %s", sqlite3_errmsg (db));
+
+    GEnumClass *atom_class = g_type_class_ref (G_PASTE_TYPE_SPECIAL_ATOM);
+
+    while (ok && sqlite3_step (select_items) == SQLITE_ROW)
+    {
+        const gchar *uuid  = (const gchar *) sqlite3_column_text (select_items, 0);
+        const gchar *kind  = (const gchar *) sqlite3_column_text (select_items, 1);
+        const gchar *value = (const gchar *) sqlite3_column_text (select_items, 2);
+
+        sqlite3_bind_text (insert_item, 1, uuid, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text (insert_item, 2, kind, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text (insert_item, 3, value, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64 (insert_item, 4, rank--);
+
+        if (g_paste_str_equal (kind, "Image"))
+        {
+            sqlite3_reset (select_image_date);
+            sqlite3_bind_text (select_image_date, 1, uuid, -1, SQLITE_TRANSIENT);
+
+            if (sqlite3_step (select_image_date) == SQLITE_ROW)
+                sqlite3_bind_int64 (insert_item, 5, sqlite3_column_int64 (select_image_date, 0));
+            else
+                sqlite3_bind_null (insert_item, 5);
+
+            /* Mirrors the legacy read path: derive the checksum from the
+             * on-disk path's basename, stripping its extension. */
+            g_autofree gchar *basename = g_path_get_basename (value);
+            gchar *dot = strrchr (basename, '.');
+            if (dot)
+                *dot = '\0';
+            sqlite3_bind_text (insert_item, 6, basename, -1, SQLITE_TRANSIENT);
+        }
+        else
+        {
+            sqlite3_bind_null (insert_item, 5);
+            sqlite3_bind_null (insert_item, 6);
+        }
+
+        gint64 item_id = 0;
+        if (sqlite3_step (insert_item) == SQLITE_ROW)
+            item_id = sqlite3_column_int64 (insert_item, 0);
+        else
+        {
+            g_warning ("sqlite: failed to migrate legacy item “%s”: %s", uuid, sqlite3_errmsg (db));
+            ok = FALSE;
+        }
+        sqlite3_reset (insert_item);
+        sqlite3_clear_bindings (insert_item);
+
+        if (ok)
+        {
+            sqlite3_reset (select_specials);
+            sqlite3_bind_text (select_specials, 1, uuid, -1, SQLITE_TRANSIENT);
+
+            gint64 position = 0;
+            while (sqlite3_step (select_specials) == SQLITE_ROW)
+            {
+                const gchar  *mime = (const gchar *) sqlite3_column_text (select_specials, 0);
+                gconstpointer data = sqlite3_column_blob (select_specials, 1);
+                int           len  = sqlite3_column_bytes (select_specials, 1);
+                const gchar  *nick = g_paste_sqlite_backend_nick_for_legacy_mime (atom_class, mime);
+
+                if (!nick)
+                {
+                    g_warning ("sqlite: dropping a special value of unknown legacy mime “%s” for “%s”", mime, uuid);
+                    continue;
+                }
+
+                sqlite3_reset (insert_special);
+                sqlite3_clear_bindings (insert_special);
+                sqlite3_bind_int64 (insert_special, 1, item_id);
+                sqlite3_bind_int64 (insert_special, 2, position++);
+                sqlite3_bind_text  (insert_special, 3, nick, -1, SQLITE_STATIC);
+                sqlite3_bind_blob  (insert_special, 4, data ? data : (gconstpointer) "", len, SQLITE_TRANSIENT);
+
+                if (sqlite3_step (insert_special) != SQLITE_DONE)
+                {
+                    g_warning ("sqlite: failed to migrate special values for “%s”: %s", uuid, sqlite3_errmsg (db));
+                    ok = FALSE;
+                    break;
+                }
+            }
+        }
+    }
+
+    g_type_class_unref (atom_class);
+
+    sqlite3_finalize (select_items);
+    sqlite3_finalize (insert_item);
+    sqlite3_finalize (select_image_date);
+    sqlite3_finalize (select_specials);
+    sqlite3_finalize (insert_special);
+
+    if (!ok)
+    {
+        g_paste_sqlite_backend_exec (db, "ROLLBACK;");
+        return FALSE;
+    }
+
+    return g_paste_sqlite_backend_exec (db,
+        "DROP TABLE items_legacy;"
+        "DROP TABLE special_values_legacy;"
+        "DROP TABLE image_metadata_legacy;"
+        "COMMIT;");
+}
+
 /* Get the (cached) connection for @db_path, opening and preparing the database
  * as needed. Returns NULL (and warns) when the database cannot be used, e.g.
  * when it was created by a newer GPaste: every operation then no-ops instead
@@ -506,7 +709,9 @@ g_paste_sqlite_backend_open (const GPasteStorageBackend *self,
     }
 
     if (version == 0)
-        ok = g_paste_sqlite_backend_create_schema (db);
+        ok = g_paste_sqlite_backend_has_legacy_schema (db)
+             ? g_paste_sqlite_backend_migrate_legacy_schema (db)
+             : g_paste_sqlite_backend_create_schema (db);
     else
         ok = g_paste_sqlite_backend_migrate_schema (db, version);
 
@@ -631,6 +836,13 @@ g_paste_sqlite_backend_write_special_values (sqlite3          *db,
         const gchar *mime = g_enum_get_value (atom_class, g_paste_binary_data_get_mime (value))->value_nick;
         gsize data_length;
         gconstpointer data = g_bytes_get_data (g_paste_binary_data_get_bytes (value), &data_length);
+
+        /* g_bytes_get_data() returns NULL for a zero-length GBytes; passing that
+         * straight through binds SQL NULL regardless of length, which then
+         * fails the NOT NULL constraint on this column for a legitimately
+         * empty special value. */
+        if (!data)
+            data = "";
 
         sqlite3_bind_int64 (stmt, 1, item_id);
         sqlite3_bind_int64 (stmt, 2, position);
